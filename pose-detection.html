@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>体の姿勢検出</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+</head>
+<body>
+    <h1>体の姿勢検出</h1>
+    
+    <div>
+        <video id="input_video" width="640" height="480" autoplay muted></video>
+        <canvas id="output_canvas" width="640" height="480"></canvas>
+    </div>
+    
+    <div>
+        <button id="startBtn">開始</button>
+        <button id="stopBtn" disabled>停止</button>
+    </div>
+    
+    <div id="status">開始ボタンを押してください</div>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const statusElement = document.getElementById('status');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        
+        let pose;
+        let camera;
+        let isRunning = false;
+
+        function onResults(results) {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // 元の映像を描画
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+            
+            if (results.poseLandmarks) {
+                statusElement.textContent = '姿勢検出中';
+                
+                // 骨格の線を描画
+                drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
+                
+                // 関節の点を描画
+                drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 2});
+            } else {
+                statusElement.textContent = '体が検出されていません';
+            }
+            
+            canvasCtx.restore();
+        }
+
+        async function startCamera() {
+            try {
+                statusElement.textContent = '初期化中...';
+                
+                pose = new Pose({
+                    locateFile: (file) => {
+                        return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+                    }
+                });
+                
+                pose.setOptions({
+                    modelComplexity: 1,
+                    smoothSegmentation: true,
+                    enableSegmentation: false,
+                    smoothLandmarks: true,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+                
+                pose.onResults(onResults);
+                
+                camera = new Camera(videoElement, {
+                    onFrame: async () => {
+                        if (isRunning) {
+                            await pose.send({image: videoElement});
+                        }
+                    },
+                    width: 640,
+                    height: 480
+                });
+                
+                await camera.start();
+                isRunning = true;
+                
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                statusElement.textContent = 'カメラ起動中...';
+                
+            } catch (error) {
+                console.error('エラー:', error);
+                statusElement.textContent = '初期化に失敗しました: ' + error.message;
+            }
+        }
+
+        function stopCamera() {
+            isRunning = false;
+            
+            if (camera) {
+                camera.stop();
+            }
+            
+            if (videoElement.srcObject) {
+                const tracks = videoElement.srcObject.getTracks();
+                tracks.forEach(track => track.stop());
+                videoElement.srcObject = null;
+            }
+            
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            statusElement.textContent = '停止しました';
+        }
+
+        startBtn.addEventListener('click', startCamera);
+        stopBtn.addEventListener('click', stopCamera);
+    </script>
+</body>
+</html>
