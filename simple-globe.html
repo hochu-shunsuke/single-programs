@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>地球儀</title>
+    <style>
+        body {
+            margin: 0;
+            background: #000;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        #globe {
+            width: 100vw;
+            height: 100vh;
+        }
+        #coordinate-card {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(20, 20, 25, 0.95);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            min-width: 220px;
+            display: none;
+        }
+        #coordinate-card h3 {
+            margin: 0 0 16px 0;
+            color: #fff;
+            font-size: 18px;
+            font-weight: 600;
+        }
+        #coordinate-card .coord-row {
+            display: flex;
+            justify-content: space-between;
+            margin: 8px 0;
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 14px;
+        }
+        #coordinate-card .coord-value {
+            font-weight: 500;
+            color: #fff;
+            font-family: Monaco, Consolas, monospace;
+        }
+    </style>
+</head>
+<body>
+    <div id="globe"></div>
+    <div id="coordinate-card">
+        <h3>位置情報</h3>
+        <div class="coord-row">
+            <span>緯度</span>
+            <span class="coord-value" id="latitude">-</span>
+        </div>
+        <div class="coord-row">
+            <span>経度</span>
+            <span class="coord-value" id="longitude">-</span>
+        </div>
+    </div>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        let scene, camera, renderer, globe, controls;
+        let mouseX = 0, mouseY = 0;
+        let isMouseDown = false;
+        let rotationSpeed = 0.002;
+        let raycaster, mouse;
+        
+        function init() {
+            // シーン設定
+            scene = new THREE.Scene();
+            
+            // カメラ設定
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 3;
+            
+            // レンダラー設定
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setClearColor(0x000000);
+            document.getElementById('globe').appendChild(renderer.domElement);
+            
+            // 地球の作成
+            createGlobe();
+            
+            // レイキャスター初期化
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+            
+            // マウスイベント
+            setupMouseControls();
+            
+            // GeoJSONデータの読み込み
+            loadGeoJSON();
+            
+            // アニメーション開始
+            animate();
+        }
+        
+        function createGlobe() {
+            // 地球の基本形状
+            const geometry = new THREE.SphereGeometry(1, 64, 64);
+            const material = new THREE.MeshBasicMaterial({ 
+                color: 0x2233aa,
+                transparent: true,
+                opacity: 0.8
+            });
+            globe = new THREE.Mesh(geometry, material);
+            scene.add(globe);
+        }
+        
+        function setupMouseControls() {
+            const canvas = renderer.domElement;
+            
+            canvas.addEventListener('mousedown', (event) => {
+                isMouseDown = true;
+                mouseX = event.clientX;
+                mouseY = event.clientY;
+            });
+            
+            canvas.addEventListener('mousemove', (event) => {
+                if (isMouseDown) {
+                    const deltaX = event.clientX - mouseX;
+                    const deltaY = event.clientY - mouseY;
+                    
+                    globe.rotation.y += deltaX * 0.01;
+                    globe.rotation.x += deltaY * 0.01;
+                    
+                    mouseX = event.clientX;
+                    mouseY = event.clientY;
+                }
+            });
+            
+            canvas.addEventListener('mouseup', () => {
+                isMouseDown = false;
+            });
+            
+            canvas.addEventListener('click', (event) => {
+                if (!isMouseDown) {
+                    handleGlobeClick(event);
+                }
+            });
+            
+            canvas.addEventListener('wheel', (event) => {
+                event.preventDefault();
+                camera.position.z += event.deltaY * 0.001;
+                camera.position.z = Math.max(1.5, Math.min(5, camera.position.z));
+            });
+        }
+        
+        function loadGeoJSON() {
+            // 簡単な世界地図のGeoJSONデータ（Natural Earth 50m）
+            const geoJsonUrl = 'https://raw.githubusercontent.com/holtzy/D3-graph-gallery/master/DATA/world.geojson';
+            
+            fetch(geoJsonUrl)
+                .then(response => response.json())
+                .then(data => {
+                    drawCountries(data);
+                })
+                .catch(error => {
+                    console.error('GeoJSON読み込みエラー:', error);
+                    // フォールバック：基本的な線を描画
+                    drawBasicLines();
+                });
+        }
+        
+        function drawCountries(geoData) {
+            const countryGroup = new THREE.Group();
+            
+            geoData.features.forEach(feature => {
+                if (feature.geometry.type === 'Polygon') {
+                    drawPolygon(feature.geometry.coordinates[0], countryGroup);
+                } else if (feature.geometry.type === 'MultiPolygon') {
+                    feature.geometry.coordinates.forEach(polygon => {
+                        drawPolygon(polygon[0], countryGroup);
+                    });
+                }
+            });
+            
+            globe.add(countryGroup);
+        }
+        
+        function drawPolygon(coordinates, parent) {
+            const points = [];
+            
+            coordinates.forEach(coord => {
+                const lon = coord[0];
+                const lat = coord[1];
+                
+                // 経度緯度を3D座標に変換（地図の東西を正しく表示するため経度を反転）
+                const phi = (90 - lat) * Math.PI / 180;  // 緯度から極角
+                const theta = -lon * Math.PI / 180;      // 経度から方位角（反転）
+                
+                const x = Math.sin(phi) * Math.cos(theta);
+                const y = Math.cos(phi);
+                const z = Math.sin(phi) * Math.sin(theta);
+                
+                points.push(new THREE.Vector3(x * 1.01, y * 1.01, z * 1.01));
+            });
+            
+            if (points.length > 2) {
+                const geometry = new THREE.BufferGeometry().setFromPoints(points);
+                const material = new THREE.LineBasicMaterial({ 
+                    color: 0xffffff,
+                    transparent: true,
+                    opacity: 0.7
+                });
+                const line = new THREE.Line(geometry, material);
+                parent.add(line);
+            }
+        }
+        
+        function drawBasicLines() {
+            // フォールバック：基本的な格子線
+            const linesGroup = new THREE.Group();
+            
+            // 経度線
+            for (let lon = -180; lon <= 180; lon += 30) {
+                const points = [];
+                for (let lat = -90; lat <= 90; lat += 5) {
+                    const phi = (90 - lat) * Math.PI / 180;  // 緯度から極角
+                    const theta = -lon * Math.PI / 180;      // 経度から方位角（反転）
+                    
+                    const x = Math.sin(phi) * Math.cos(theta);
+                    const y = Math.cos(phi);
+                    const z = Math.sin(phi) * Math.sin(theta);
+                    
+                    points.push(new THREE.Vector3(x * 1.01, y * 1.01, z * 1.01));
+                }
+                
+                const geometry = new THREE.BufferGeometry().setFromPoints(points);
+                const material = new THREE.LineBasicMaterial({ 
+                    color: 0x444444,
+                    transparent: true,
+                    opacity: 0.5
+                });
+                const line = new THREE.Line(geometry, material);
+                linesGroup.add(line);
+            }
+            
+            // 緯度線
+            for (let lat = -90; lat <= 90; lat += 30) {
+                const points = [];
+                for (let lon = -180; lon <= 180; lon += 5) {
+                    const phi = (90 - lat) * Math.PI / 180;  // 緯度から極角
+                    const theta = -lon * Math.PI / 180;      // 経度から方位角（反転）
+                    
+                    const x = Math.sin(phi) * Math.cos(theta);
+                    const y = Math.cos(phi);
+                    const z = Math.sin(phi) * Math.sin(theta);
+                    
+                    points.push(new THREE.Vector3(x * 1.01, y * 1.01, z * 1.01));
+                }
+                
+                const geometry = new THREE.BufferGeometry().setFromPoints(points);
+                const material = new THREE.LineBasicMaterial({ 
+                    color: 0x444444,
+                    transparent: true,
+                    opacity: 0.5
+                });
+                const line = new THREE.Line(geometry, material);
+                linesGroup.add(line);
+            }
+            
+            globe.add(linesGroup);
+        }
+        
+        function handleGlobeClick(event) {
+            // マウス座標を正規化座標に変換
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            
+            // レイキャスター更新
+            raycaster.setFromCamera(mouse, camera);
+            
+            // 地球との交点を計算
+            const intersects = raycaster.intersectObject(globe);
+            
+            if (intersects.length > 0) {
+                // ワールド座標での交点を取得
+                let point = intersects[0].point.clone();
+                
+                // 地球の回転を逆変換してローカル座標に戻す
+                point.applyMatrix4(globe.matrixWorld.clone().invert());
+                
+                // 3D座標から経度緯度に変換
+                const coords = xyzToLatLon(point.x, point.y, point.z);
+                
+                // カードに表示
+                updateCoordinateCard(coords.lat, coords.lon, intersects[0].point);
+            }
+        }
+        
+        function xyzToLatLon(x, y, z) {
+            // 3D座標から球面座標への逆変換
+            const radius = Math.sqrt(x * x + y * y + z * z);
+            
+            // 緯度の計算（Y軸が北極方向）
+            const lat = Math.asin(y / radius) * 180 / Math.PI;
+            
+            // 経度の計算（描画時に反転したので、逆変換でも反転）
+            let lon = -Math.atan2(z, x) * 180 / Math.PI;
+            
+            // 経度を-180～180度の範囲に正規化
+            while (lon > 180) lon -= 360;
+            while (lon < -180) lon += 360;
+            
+            return {
+                lat: lat,
+                lon: lon
+            };
+        }
+        
+        function updateCoordinateCard(lat, lon, point3d) {
+            const card = document.getElementById('coordinate-card');
+            const latElement = document.getElementById('latitude');
+            const lonElement = document.getElementById('longitude');
+            
+            // 座標を表示用にフォーマット
+            const latStr = Math.abs(lat).toFixed(2) + '°' + (lat >= 0 ? 'N' : 'S');
+            const lonStr = Math.abs(lon).toFixed(2) + '°' + (lon >= 0 ? 'E' : 'W');
+            
+            latElement.textContent = latStr;
+            lonElement.textContent = lonStr;
+            
+            // カードを表示
+            card.style.display = 'block';
+        }
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // 自動回転（マウスで操作していない時）
+            if (!isMouseDown) {
+                globe.rotation.y += rotationSpeed;
+            }
+            
+            renderer.render(scene, camera);
+        }
+        
+        // ウィンドウリサイズ対応
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+        
+        // 初期化
+        init();
+    </script>
+</body>
+</html>
